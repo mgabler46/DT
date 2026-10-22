@@ -1,0 +1,208 @@
+SI09 MODE SEEKING GEGEN REAL+NOISE — VERSION 2.0.0
+
+START
+Den ZIP im bisherigen Arbeitsordner mit CSV_Export und .venv entpacken.
+Der neue Unterordner si09_modeseeking_noise_24h_v2 enthaelt alle benoetigten
+Python-Quelldateien. Vorhandene Programme und Ergebnisordner bleiben erhalten.
+
+PowerShell im uebergeordneten Datenordner, beispielsweise E:\DiplomDaten:
+
+& ".\.venv\Scripts\python.exe" .\si09_modeseeking_noise_24h_v2\start_si09_modeseeking_noise_24h.py .\CSV_Export --device cuda --hours 24
+
+Die feste Arbeitsmenge ist anhand der gemessenen Fit-Zeiten deines letzten
+CUDA-Laufs fuer rund 24 Stunden auf einer NVIDIA GTX 1070 dimensioniert.
+Standard: 864000 GAN-Zyklen als Obergrenze inklusive aeusserer Refit-GANs
+und 7063200 Klassifikator-Updates. Es werden Trainingsschritte gezaehlt,
+keine exakten Hardware-FLOPs. GAN-Praefixe werden dabei nur einmal gezaehlt.
+Schaetzung aus den letzten Messungen: GAN-Training 9.5 h, Augmentations-HPO
+7.4 h, Klassifikator-HPO 4.4 h, aeussere Klassifikatoren 0.1 h; zusaetzlich
+12 Prozent Reserve fuer Features, Import, Auswertung, I/O und Laufzeitschwankungen.
+Gesamtschaetzung: 24.0 h. --plan-only zeigt diese Rechnung ohne Training.
+Die aeusseren Refits sind mit 8000 GAN-Zyklen und 600 Kopf-Updates kalkuliert;
+die innere HPO kann kleinere Werte waehlen und den Lauf dadurch verkuerzen.
+
+WICHTIG: --hours 24 ist EIN PLANUNGSWERT. Kein Abbruch nach 24 Stunden.
+Nach Erreichen des Wertes erscheint einmal ein Hinweis. Das Programm rechnet
+weiter, bis saemtliche geplanten Wiederholungen und beide Ansaetze fertig sind.
+Die Laufzeit bleibt eine Schaetzung aus deinem bisherigen System. Eine
+andere CPU, Datentraegerlast oder Auslastung der GPU veraendert sie.
+
+Nach manuellem Abbruch, Rechnerneustart oder einer behandelbaren Stoerung:
+
+& ".\.venv\Scripts\python.exe" .\si09_modeseeking_noise_24h_v2\start_si09_modeseeking_noise_24h.py .\CSV_Export --device cuda --hours 24 --resume
+
+Suchraum, Seeds, Daten und Code muessen beim Fortsetzen identisch bleiben.
+--hours darf geaendert werden: der Wert beeinflusst weder Auswahl noch Training.
+Ein belegter Ausgabeordner wird ohne --resume abgelehnt, niemals geleert.
+
+NUR DIESE ZWEI ANSAETZE
+si09_noise_only: reale Daten + direkte Noise-Augmentation beider Klassen.
+                Kein GAN-Training, keine GAN-Daten, GAN-Anteil exakt null.
+si09_mode_seeking: reale Daten + direkte Noise-Augmentation beider Klassen
+                  + Mode-Seeking-TimeGAN-Sequenzen der Minderheitsklasse.
+Kein PacGAN, Instance-Noise-GAN, TTUR, Random-Arm oder Real-only-Arm.
+Direktes Noise ist kein Instance Noise am Diskriminator.
+
+SI09 UND MODELL
+Nur SI09, force_si_max_dom_minus_other (SI15-Quellindex 8, nullbasiert).
+Alle 101 Kurvenpunkte, GAN-Eingabe [N,101,1], Bild [N,1,96,160].
+ConvNeXt hat genau einen physischen Eingangskanal. Die RGB-Stem-Gewichte
+werden wie bisher ueber die Kanaele summiert. Keine drei Bildbaender.
+Der vortrainierte ConvNeXt-Backbone bleibt eingefroren. Klassifikator-HPO
+vergleicht den bisherigen SI09-CNN-Kopf und SI09-CNN+Transformer-Kopf.
+Die unveraenderte SI7-Quelldatei dient zusaetzlich dem bewaehrten Import und
+Kohortenabgleich. Es wird kein SI7-Klassifikator und kein SI7-GAN trainiert.
+
+WIEDERHOLUNGEN UND PATIENTENTRENNUNG
+Drei NEUE Wiederholungen mit Indices 2,3,4, jeweils 3 aeussere x 3 innere
+patientenstratifizierte Folds. Index 1 aus dem letzten Lauf wird nicht
+erneut verwendet. Die Indices steuern sowohl Splits als auch Trainingsseeds.
+Alle Messungen/Kontakte einer Person bleiben in derselben Partition.
+Beide Ansaetze erhalten identische Splits, Klassifikator- und Noise-Seeds.
+Skalierung und Normalisierung werden nur auf dem jeweiligen Training gefittet.
+Aeussere Tests enthalten ausschliesslich reale, zur HPO nicht verwendete Daten.
+Es gibt keine zusaetzliche unabhaengige Holdout-Kohorte.
+
+Innen und aussen: sechs Klassifikator-Seeds; drei GAN-Seeds fuer Mode Seeking.
+Die Kopf-Slots 1/4, 2/5 und 3/6 teilen jeweils denselben GAN-Pool, behalten
+jedoch eigene Kopf-Initialisierung, Minibatch-Ziehungen und direkte Noise-Kopien.
+Kontaktwahrscheinlichkeiten werden zuerst je Patient, dann ueber die sechs
+Klassifikatoren gemittelt. Optimierungsziel ist Cohen-Kappa des inneren
+patientengepoolten Wahrscheinlichkeitsensembles.
+
+HPO-STUFE 1: ZYKLEN UND ZUSAMMENSETZUNG GEMEINSAM
+Fuer Mode Seeking werden ALLE 90 Kombinationen untersucht:
+- GAN-Zyklen: 4000, 5000, 6000, 7000, 8000.
+- GAN-Minderheitsverhaeltnis r: 0.25, 0.5, 1.0.
+- Direkte Noise-Ziehwahrscheinlichkeit q unter den Nicht-GAN-Ziehungen:
+  0.25, 0.5, 0.75.
+- Direktes Noise-Sigma: 0.01 oder 0.02 in Trainings-MinMax-Einheiten.
+Die Kontrolle untersucht dieselben sechs q/Sigma-Kombinationen, r=0.
+
+Jede Kombination erhaelt denselben Referenzkopf: SI09-CNN mit Kopfbreite 32,
+Lernrate 0.0003, Weight Decay 0.01, Dropout 0.2, Feature-Dropout 0.1 und
+300 Klassifikator-Updates. Schwelle wird aus inneren Daten in 0.05-Schritten
+von 0.10 bis 0.90 gewaehlt. 300 Updates sind KEINE GAN-Zyklen.
+
+GAN fest: Mode-Seeking-Lambda=1, Hidden=16, 2 GRU-Lagen, 500 AE- und
+500 Supervisor-Vortrainingsschritte, G-/D-Lernrate 0.001, Batchgroesse 16.
+Pro GAN-Zyklus zweimal G/S und zweimal E/R, maximal ein D-Update mit der
+bisherigen D-Loss-Schwelle. Drei verrauschte Kopien pro Minderheitssequenz
+mit Sigma 0.02 im GAN-Training. Lambda und GAN-Netzbreite werden hier nicht
+zusaetzlich optimiert. Jedes GAN lernt ausschliesslich SI09, eindimensional.
+
+GAN-Praefixe werden innerhalb derselben Trainingspartition und desselben
+Seeds fortgesetzt: 4000 -> 5000 -> 6000 -> 7000 -> 8000. Gleiche GANs werden
+fuer unterschiedliche Zusammensetzungen wiederverwendet. Getrennte Folds
+und Seeds besitzen weiterhin getrennte GANs. Kein Zugriff auf alte Resultate.
+
+HPO-STUFE 2: KLASSIFIKATOR BEI FESTER AUGMENTATION
+Die beste Augmentation aus Stufe 1 wird vollstaendig festgehalten:
+GAN-Zyklen, r, q, Sigma und GAN-Trainingsparameter bleiben unveraendert.
+Beide Ansaetze pruefen dieselben 12 Kopfprofile, sechs CNN und sechs
+CNN+Transformer, mit Lernraten 0.0003/0.001, Weight Decay 0.001/0.01,
+Dropout 0.1/0.2, CNN-Kopfbreiten 0/32, Transformerbreiten 8/16/24.
+Checkpoint-HPO: 150,300,600 Updates. Schwellen-HPO: 0.10 bis 0.90.
+Die gesamte Auswahl wird vor Verarbeitung der aeusseren Testdaten gespeichert.
+Anschliessend Refit auf dem aeusseren Trainingsfold und einmalige aeussere
+Auswertung je Ansatz. Die HPO ist zweistufig und auf den Referenzkopf in
+Stufe 1 bedingt, keine vollstaendige Suche aller Augmentations-/Kopfkreuzungen.
+
+WAS BEDEUTET ZUSAMMENSETZUNG?
+p_GAN = r*n_Minderheit / (n_Patienten + r*n_Minderheit)
+p_Noise = (1-p_GAN)*q
+p_Real = (1-p_GAN)*(1-q)
+Die Kontrolle hat p_GAN=0, p_Noise=q und p_Real=1-q.
+r=0.25 bedeutet nicht 25 Prozent GAN-Beispiele. Die exakten Anteile haengen
+auch vom Klassenverhaeltnis des jeweiligen Trainingsfolds ab.
+Die Ziehung ist patientengewichtet, mit Zuruecklegen. Direkte Noise-Pools
+enthalten drei Kopien jedes Originalkontakts. Bei gleicher Updatezahl
+haben alle Kandidaten gleich viele Trainingsziehungen; ein groesserer Pool
+vervielfacht nicht automatisch die Anzahl Optimierungsschritte.
+outer_seed_metrics.csv protokolliert tatsaechlich gezogene Real/Noise/GAN-Zahlen.
+
+EINE FESTE EMPFEHLUNG AM LAUFENDE
+fixed_augmentation_recommendation.json enthaelt je Ansatz genau eine feste
+Augmentationskonfiguration; fuer Mode Seeking insbesondere Zyklen/r/q/Sigma.
+Sie wird aus ALLEN Stufe-1-Kandidaten ueber die gemeinsamen vollstaendigen
+Wiederholungen abgeleitet, nicht nur aus Siegerhaeufigkeiten.
+Pro Kandidat wird inneres OOF-Kappa zuerst ueber die drei aeusseren
+Trainingskontexte einer Wiederholung gemittelt, dann ueber Wiederholungen.
+Bei Kappa-Gleichstand entscheidet geringere Streuung der Wiederholungsmittel,
+dann BA, schlechtestes Kontext-Kappa, kleinere Zyklenzahl, r, q und Sigma.
+Kein aeusserer Kappa-/Accuracy-/BA-Wert geht in diese Rangfolge ein.
+
+ready_development_recommendation bedeutet: alle geplanten Wiederholungen
+und mindestens drei gemeinsame Wiederholungen abgeschlossen.
+Fruehere Empfehlungen sind provisional. Ohne vollstaendige gemeinsame
+Wiederholung gibt es keine Empfehlung. Alle Kandidaten muessen auf genau
+denselben vollstaendigen Kontexten vorliegen, sonst wird nicht gerankt.
+fixed_cycle_ranking.csv mittelt je Zyklenzahl ueber alle Mischungen und dient
+nur der Einordnung. Die endgueltige Wahl erfolgt aus dem GEMEINSAMEN Gitter.
+
+Die feste Empfehlung ist fuer die Weiterentwicklung bestimmt. Die aeusseren
+CV-Kennzahlen bewerten die je Fold ausgewaehlte HPO-Pipeline. Sie sind keine
+unabhaengige Leistungsbewertung der nachtraeglich global festgelegten Mischung.
+Klassifikatorkopf, Updatezahl und Schwelle werden nicht global eingefroren.
+Dieselbe bereits untersuchte Kohorte bleibt explorative Entwicklung.
+Wiederholungen und Seeds sind keine neuen Patienten oder unabhaengigen Studien.
+
+AUSGABE
+Neuer Ordner: results_si09_modeseeking_noise_24h_v2
+Zum Teilen: si09_modeseeking_noise_aggregate.zip
+
+summary_patient_pooled.csv: Mittel und Streuung der pro vollstaendiger
+  Wiederholung patientengepoolten aeusseren Kennzahlen; Kappa/BA/Accuracy/AUC.
+common_repeat_summary.csv: nur auf fuer BEIDE Ansaetze fertigen Wiederholungen.
+repeat_patient_pooled.csv: Kennzahlen je Wiederholung; Teilresultate markiert.
+outer_fold_metrics.csv / outer_seed_metrics.csv: Fold- und Seed-Auswertung.
+paired_repeat_differences.csv: Mode Seeking MINUS Real+Noise, gepaart je
+  gemeinsamer vollstaendiger Wiederholung. Keine unabhaengigen t-Tests.
+fixed_augmentation_recommendation.json: feste Entwicklungsempfehlung/Status.
+fixed_augmentation_ranking.csv: alle 90 GAN- und sechs Kontrollkombinationen.
+fixed_augmentation_by_repeat.csv: zugehoerige innere Wiederholungsmittel.
+fixed_cycle_ranking.csv: Vergleich der fuenf GAN-Trainingsdauern.
+selected_configurations.csv: je aeusserem Fold tatsaechlich verwendete Auswahl.
+inner_candidates.csv / inner_checkpoint_metrics.csv: innere HPO-Scores/Kurven.
+generation_diagnostics.csv / timegan_training_history.csv: nur GAN-Arm.
+classifier_fit_diagnostics.csv: Zeiten und Cache-Nutzung beider Ansaetze.
+protocol.json / run_status.json: Suchraum, Fortschritt, Zeitplanung, Status.
+
+Das ZIP enthaelt nur fest erlaubte Aggregate. Patientenkennungen, einzelne
+Patientenprognosen, Rohdaten, Split-Hashes, Modelle und Cache bleiben lokal.
+BA, Accuracy und Kappa werden waehrend des Laufs auf der Konsole ausgegeben.
+Die 0.5-Werte der Einzelmodelle dienen dem Fortschritt. HPO nutzt das innere
+Ensemble und die innere Schwelle. Ensemble-Kappa ist kein Mittel der Seed-Kappas.
+
+PLAN, DATENCHECK UND TECHNISCHER TEST
+Nur Plan anzeigen, ohne Daten/GPU/Training:
+& ".\.venv\Scripts\python.exe" .\si09_modeseeking_noise_24h_v2\start_si09_modeseeking_noise_24h.py --plan-only
+
+Mit --check-data erfolgt Import-/Kohorten-/Splitpruefung ohne Training.
+Danach mit demselben Befehl, --resume und ohne --check-data starten.
+--self-test --device cpu --output-dir results_smn_kuerzester_test fuehrt
+einen kleinen vollstaendigen Test mit kuenstlichen CSVs/Test-CNN durch.
+Der Selbsttest verwendet 2 Wiederholungen, kurze technische GAN-Endpunkte,
+2 Kopf-Seeds/1 GAN-Seed und dient NICHT als reale Leistungsbewertung.
+
+Standardplan: 19440 innere Klassifikator-Fits plus 108 aeussere Refit-Modelle;
+81 innere und 27 aeussere GAN-Trainingsverlaeufe. Die fuenf GAN-Dauern teilen
+im selben Fold/Seed ihre Praefixe. Zwischenspeicherung alle 250 GAN-Schritte.
+Ein unterbrochener Klassifikatorfit wird neu begonnen (maximal 600 Updates).
+Gefrorene CNN-Features werden auf Platte und in begrenztem RAM gecacht.
+Bei CUDA-Speichermangel wird die Feature-Microbatchgroesse reduziert.
+
+Optional VOR ERSTEM START Suchraum begrenzen, beispielsweise:
+--noise-probabilities 0.5,0.75
+oder mehr Wiederholungen planen:
+--repeats 5
+Beides erzeugt einen anderen Plan und darf nicht beim --resume geaendert werden.
+Es gibt ausdruecklich keine automatische Verkleinerung nach Laufzeit/Ergebnissen.
+
+VORAUSSETZUNGEN UND QUELLEN
+Vorhandene CUDA-PyTorch-/Torchvision-venv, numpy, pandas, scipy, scikit-learn.
+Keine automatische Installation. Vorhandene Gewichte aus pretrained_weights_v36.
+Float32. Die vier smn_-Module sind unveraenderte Kopien deiner bereitgestellten
+Module. Der neue Starter ergaenzt das Suchprotokoll und die Auswertung.
+Mode-Seeking-Regularisierung aus dem bereits verwendeten Paper:
+https://arxiv.org/abs/1903.05628
